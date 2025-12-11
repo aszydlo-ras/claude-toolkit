@@ -16,7 +16,11 @@ Before running any examples, make sure you have:
    export ANTHROPIC_API_KEY='your-api-key-here'
    ```
    
-   Or copy `.env.example` to `.env` and add your key there.
+   Or copy `.env.example` to `.env` and add your key there, then load it:
+   ```python
+   from dotenv import load_dotenv
+   load_dotenv()
+   ```
 
 ## Available Examples
 

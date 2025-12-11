@@ -36,8 +36,8 @@ def extract_code_blocks(text: str, language: str = None) -> List[Tuple[str, str]
     Returns:
         List of tuples (language, code) for each code block found
     """
-    # Pattern to match markdown code blocks
-    pattern = r"```(\w+)?\n(.*?)```"
+    # Pattern to match markdown code blocks (with optional language and newline)
+    pattern = r"```(\w*)\n?(.*?)```"
     matches = re.findall(pattern, text, re.DOTALL)
     
     code_blocks = [(lang or "unknown", code.strip()) for lang, code in matches]
@@ -53,11 +53,15 @@ def count_tokens_estimate(text: str) -> int:
     Provide a rough estimate of token count for a given text.
     This is a simple approximation: ~4 characters per token.
     
+    Note: This is a very rough approximation and actual token counts
+    may vary significantly. For accurate token counting, use the
+    official Anthropic tokenizer.
+    
     Args:
         text: The text to estimate tokens for
         
     Returns:
-        Estimated token count
+        Estimated token count (approximate)
     """
     return len(text) // 4
 
