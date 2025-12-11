@@ -13,25 +13,46 @@ Expert knowledge for understanding and extending the activity event collection a
 Before working on activity/conversion features, ensure required repositories are available:
 
 ```bash
-# Check repositories and prompt to clone missing ones
+# Check all repositories
 python .claude/skills/activity-conversions/scripts/check_repos.py
+
+# Check repos for specific task type
+python .claude/skills/activity-conversions/scripts/check_repos.py --task debugging
+python .claude/skills/activity-conversions/scripts/check_repos.py --task pixel-modification
+python .claude/skills/activity-conversions/scripts/check_repos.py --task schema-change
+
+# Auto-clone missing repos without prompting
+python .claude/skills/activity-conversions/scripts/check_repos.py --auto-clone
 
 # Check only (no clone prompts)
 python .claude/skills/activity-conversions/scripts/check_repos.py --check-only
 
-# Auto-clone missing repos without prompting
-python .claude/skills/activity-conversions/scripts/check_repos.py --auto-clone
+# JSON output for programmatic use
+python .claude/skills/activity-conversions/scripts/check_repos.py --json
+
+# List available task types
+python .claude/skills/activity-conversions/scripts/check_repos.py --list-tasks
 ```
 
 **When this skill is invoked, ALWAYS run the check script first if working on implementation tasks.**
 
+## Reference Documentation
+
+Detailed documentation is available in `references/`:
+- **[debugging-guide.md](references/debugging-guide.md)** - Step-by-step debugging procedures
+- **[event-types.md](references/event-types.md)** - All activity and conversion event types
+- **[field-reference.md](references/field-reference.md)** - Field definitions and extractors
+
 ## Required Repositories
 
-| Repository | GitHub URL | Purpose |
-|------------|-----------|---------|
-| adplatform | `git@github.com:Ringier-Axel-Springer-PL/adplatform.git` | Main monorepo with emission handlers, modes, events API |
-| datalayer-api | `git@github.com:Ringier-Axel-Springer-PL/adp-datalayer-api.git` | Ad request and display layer |
-| adp-ecommerce-pixel | `git@github.com:Ringier-Axel-Springer-PL/adp-ecommerce-pixel.git` | Client-side ecommerce tracking pixel |
+| Repository | GitHub URL | Tasks |
+|------------|-----------|-------|
+| adplatform | `Ringier-Axel-Springer-PL/adplatform` | schema-change, attribution, debugging, reports, pixel |
+| datalayer-api | `Ringier-Axel-Springer-PL/adp-datalayer-api` | debugging |
+| adp-ecommerce-pixel | `Ringier-Axel-Springer-PL/adp-ecommerce-pixel` | pixel-modification, debugging |
+| adp-reports-defs | `Ringier-Axel-Springer-PL/adp-reports-defs` | schema-change, reports |
+| data-lake-glue-datasources | `Ringier-Axel-Springer-PL/data-lake-glue-datasources` | schema-change |
+| eks-ns-adp | `Ringier-Axel-Springer-PL/eks-ns-adp` | deployment, schema-change |
 
 ### Repository Check & Clone
 
@@ -255,6 +276,170 @@ PYTHONPATH=lib:src/python:tests/python \
 - Events API: `adplatform/src/python/adp_events_api/CLAUDE.md`
 - Emission: `adplatform/src/python/emission/README.md`
 - DataLake schemas: https://doc.ringieraxelspringer.pl/pages/viewpage.action?pageId=185542752
+
+## Examples
+
+### Example 1: Adding a New Field to Activity Events
+
+**Task**: Add `referrer_category` field to track referring page type (e.g., 'homepage', 'product', 'checkout')
+
+**Steps**:
+
+1. Define field in `adplatform/src/python/adp_events_api/fields/fields.py`:
+```python
+ReferrerCategory = string_field("referrer_category") \
+    .with_description("Category of the referring page") \
+    .extract_from_query_arguments(name='refcat') \
+    .set_as_datasource_dimension('REFERRER_CATEGORY', {Datasources.conversions}) \
+    .create()
+```
+
+2. Add to event model in `adplatform/src/python/adp_events_api/models/activity_event.py`:
+```python
+from adp_events_api.fields import ReferrerCategory
+
+class ActivityEvent(Event):
+    # ... existing fields ...
+    referrer_category: ReferrerCategory = None
+```
+
+3. Register in tables and datasources:
+```python
+# tables/__init__.py - for DataLake
+# datasources/__init__.py - for Druid
+```
+
+4. Generate schemas:
+```bash
+./adp events get-table-schema
+./adp events get-datasource-schema
+```
+
+5. Update pixel to send the new field (if client-side):
+```typescript
+// adp-ecommerce-pixel/src/modules/activity/services/activity-event-service.ts
+type ActivityEvent = {
+    // ... existing fields ...
+    refcat?: string;  // referrer category
+};
+```
+
+### Example 2: Debugging Missing Conversions
+
+**Symptoms**: Conversions not appearing in reports despite user completing purchase
+
+**Debug Flow**:
+
+1. **Check pixel fires** (Browser DevTools):
+```
+Network tab → Filter "activity" → Verify:
+- Request URL contains /<network>/activity
+- Parameters include: actgid, event=purchased, cost, ord (order_id)
+- Response is 200/204
+```
+
+2. **Verify tracking params in localStorage**:
+```javascript
+// In browser console
+localStorage.getItem('adp_tracking')
+// Should contain: lu, aid, touchpoint data from adclick
+```
+
+3. **Check touchpoint in DynamoDB**:
+```bash
+# Query touchpoint by user identifier (lu)
+aws dynamodb query \
+  --table-name adp-touchpoints-prod \
+  --key-condition-expression "lu = :lu" \
+  --expression-attribute-values '{":lu":{"S":"<user_lu_value>"}}'
+```
+
+4. **Check RabbitMQ queue**:
+```
+Access RabbitMQ management UI
+Queue: adp.activity.events
+Verify message is published with correct payload
+```
+
+5. **Review adp_activity mode logs**:
+```bash
+kubectl logs -l app=adp-activity -n adp --tail=100 | grep "conversion"
+kubectl logs -l app=adp-activity -n adp --tail=100 | grep "<order_id>"
+```
+
+6. **Check Kinesis stream**:
+```bash
+# Verify conversion event reached awsp-adp-conversions2 stream
+aws kinesis get-shard-iterator --stream-name awsp-adp-conversions2 ...
+```
+
+### Example 3: Decoding GCTX Context
+
+**Task**: Decode compressed GCTX parameter from ad click URL
+
+**Input**:
+```
+gctx=H4sIAAAAAAAAA6tWKkktLlGyUlAqS8wpTtVRSs7PS0nNK1GyMjJQ0lFKTi0uzszPUbIyNDJR0lFKSS1OLUpVslIqS8wpTlWyUirIL0oBMpRsAOXdkuBKAAAA
+```
+
+**Command**:
+```bash
+cd adplatform
+./adp events decode-gctx "H4sIAAAAAAAAA6tWKkktLlGyUlAqS8wpTtVRSs7PS0nNK1GyMjJQ0lFKTi0uzszPUbIyNDJR0lFKSS1OLUpVslIqS8wpTlWyUirIL0oBMpRsAOXdkuBKAAAA"
+```
+
+**Output**:
+```json
+{
+  "campaign_id": "12345",
+  "lineitem_id": "67890",
+  "creative_id": "11111",
+  "network": "1746213",
+  "publisher_id": "9999",
+  "enable_conversion_tracking": true,
+  "tpl_code": "click_tpl_1"
+}
+```
+
+**Alternative** (Python):
+```python
+from emission.csr.gctx_codec import GCTXCodec
+decoded = GCTXCodec.decode_context("H4sIAAAAAAAAA6tW...")
+print(decoded)
+```
+
+### Example 4: Modifying Ecommerce Pixel
+
+**Task**: Add custom event type to pixel
+
+**Steps**:
+
+1. Update event types in `adp-ecommerce-pixel/src/modules/activity/services/activity-event-service.ts`:
+```typescript
+export type EventName =
+    | 'page_view'
+    | 'product_detail'
+    | 'add_to_cart'
+    | 'purchased'
+    | 'my_custom_event';  // NEW
+```
+
+2. Add handler in corresponding service file
+
+3. Build and test locally:
+```bash
+cd adp-ecommerce-pixel
+npm install
+npm run build
+npm start  # local dev server
+```
+
+4. Update handler in `adplatform/src/python/emission/csr/activity.py` to process new event type
+
+5. Deploy pixel via Bamboo or:
+```bash
+npm run deploy-prod
+```
 
 ## Constraints
 
